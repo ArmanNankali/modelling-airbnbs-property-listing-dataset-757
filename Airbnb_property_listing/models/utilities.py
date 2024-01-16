@@ -6,6 +6,7 @@ import os
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import GridSearchCV
 from itertools import product
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 def load_dataframe(file_path):
     """
@@ -220,5 +221,114 @@ def find_best_model(directory):
     # The best model, hyperparameteres and metrics are returned
     return best_model, best_model_hperparameters, best_metrics, best_model_prefix
 
-
+def GridCV_tune_classification_model_hyperparameters(model_class, X_train, y_train, X_test, y_test, hyperparameters):
+    """
+    Perform hyperparameter tuning using GridSearchCV for a classification model.
     
+    Parameters:
+    - model_class: The class of the classification model to be tuned.
+    - X_train: The training features.
+    - y_train: The training labels.
+    - X_test: The test features.
+    - y_test: The test labels.
+    - hyperparameters: The grid of hyperparameters to search over.
+
+    Returns:
+    - dictionary: Best hyperparameters and best estimator.
+    - dictionary: Best F1 score on the validation set.
+    - dictionary: F1 score, accuracy, precision, and recall on the test set.
+    """
+    # Create GridSearchCV object
+    grid_search = GridSearchCV(model_class(), hyperparameters, cv=5, scoring='f1_macro')
+    # Fit the model on the training set
+    grid_search.fit(X_train, y_train)
+    
+    # Retrieve results for validation set
+    best_parameters = grid_search.best_params_
+    best_estimator = grid_search.best_estimator_
+    best_f1_val = grid_search.best_score_
+
+    # Best model predicts the labels of the test set
+    y_test_pred = grid_search.best_estimator_.predict(X_test)
+    # F1 score of test set
+    test_f1 = f1_score(y_test, y_test_pred, average='macro')
+    # Accuracy of test set
+    test_accuracy = accuracy_score(y_test, y_test_pred)
+    # Precision of test set
+    test_precision = precision_score(y_test, y_test_pred, average='macro')
+    # Recall of the test set
+    test_recall = recall_score(y_test, y_test_pred, average='macro')
+
+    best_metrics_val = {
+        "Best validation F1 score": best_f1_val,
+        "Test F1 score": test_f1,
+        "Test accuracy": test_accuracy,
+        "Test precision": test_precision,
+        "Test recall": test_recall
+    }
+
+    return best_estimator, best_parameters, best_metrics_val
+
+def evaluate_all_classifier_models(all_models_dict, X_train, y_train, X_test, y_test, model_save_file_path):
+    """
+    Evaluate and tune regression models based on a predefined dictionary of models.
+
+    Parameters:
+    - all_models_dict (dict): A dictionary where keys are model names and values are dictionaries containing:
+    - X_train: The training features.
+    - y_train: The training labels.
+    - X_test: The test features.
+    - y_test: The test labels.
+    - model_save_file_path: The file path to the folder where the best models are to be saved
+    Returns:
+    None
+    """
+    # Iterates through each model_name and model_dict combination in all_models_dict to retrieve model class, hyperparameters and model name
+    for model_name, model_dict in all_models_dict.items():
+        model_class = model_dict["model_class"]
+        param_grid = model_dict["param_grid"]
+        model_name = model_dict["model_name"]
+        best_model, best_hyperparams, best_metrics = GridCV_tune_classification_model_hyperparameters(model_class, X_train, y_train, X_test, y_test, param_grid)
+        # Best model and hyperparameters saved for each model class as well as metrics
+        save_model(best_model, best_hyperparams, best_metrics, model_save_file_path, model_name)
+
+def find_best_classifier_model(directory):
+    """
+    Find the best model based on validation RMSE from a directory containing metrics files.
+
+    Parameters:
+    - directory (str): The directory path where metrics files are stored. Default is "regression\linear_regression".
+
+    Returns:
+    - tuple: The best model, its hyperparameters, metrics, and the model prefix.
+    """
+    
+    # Best RMSE and metric file are set to baseline to be beaten by models
+    best_f1 = 0.0
+    best_metric_file = None
+
+    # All file names are iterated through in the directory and only those ending with _metrics.json are opened
+    for filename in os.listdir(directory):
+        if filename.endswith("_metrics.json"):
+            with open(os.path.join(directory, filename), "r") as file:
+                metrics_data = json.load(file)
+            # The RMSE metric is retrieved and compared against the current best
+            f1 = metrics_data["Best validation F1 score"]
+            if f1 > best_f1:
+                # If the model RMSE is better than current, that value replaces the current best RMSE and takes the place of best metrics data as well as file name
+                best_metric_file = filename
+                best_f1 = f1
+                best_metrics = metrics_data
+    
+    # The best performing model's metrics file is split to obtain the prefix for that model class
+    best_model_prefix = best_metric_file.replace("_metrics.json", "")
+
+    # This prefix is used to obtain the relevant model's .joblib file and its hyperparameter dictionary
+    best_model = joblib.load(os.path.join(directory, f"{best_model_prefix}.joblib"))
+    with open(os.path.join(directory, f"{best_model_prefix}_hyperparameters.json"), 'r') as f:
+        best_model_hperparameters = json.load(f)
+    
+    
+    print(f"Best model: {best_model}, best hyperparameters: {best_model_hperparameters}, best metrics: {best_metrics}")
+    # The best model, hyperparameteres and metrics are returned
+    return best_model, best_model_hperparameters, best_metrics, best_model_prefix
