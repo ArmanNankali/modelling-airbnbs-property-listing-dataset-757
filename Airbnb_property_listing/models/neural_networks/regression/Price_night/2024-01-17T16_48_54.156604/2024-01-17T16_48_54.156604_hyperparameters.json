@@ -1,0 +1,1 @@
+{"epochs": 700, "patience": 100, "configs": {"input_size": 11, "optimiser": "SGD", "learning_rate": 0.001, "model_depth": 2, "hidden_layer_width": 5, "output_size": 1, "weight_decay": 0.001, "activation_function": "ELU", "drop-out": 0.2}}

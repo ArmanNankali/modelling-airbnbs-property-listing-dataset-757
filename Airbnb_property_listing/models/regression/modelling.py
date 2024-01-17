@@ -172,4 +172,4 @@ all_models_dict = {
 evaluate_all_models(all_models_dict, X_train, y_train, X_test, y_test, "regression\linear_regression")
 
 # Here the best of the three models is returned with its hyperparameters, metrics and the filename prefix for identification.
-best_model, best_model_hperparameters, best_metrics, best_model_prefix =find_best_model("regression\linear_regression")
+best_model, best_model_hperparameters, best_metrics, best_model_prefix = find_best_model("regression\linear_regression")

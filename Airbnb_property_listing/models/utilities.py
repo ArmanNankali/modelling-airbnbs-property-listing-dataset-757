@@ -7,6 +7,13 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import GridSearchCV
 from itertools import product
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from torch.utils.data import Dataset
+import pandas as pd
+import torch
+from torch.utils.tensorboard import SummaryWriter
+import time
+import torch.optim
+from datetime import datetime
 
 def load_dataframe(file_path):
     """
@@ -39,19 +46,39 @@ def load_airbnb(df, label):
 
 def save_model(model, hyperparameters, metrics, file_path, model_name):
     """
-    Save a regression model, hyperparameters, and metrics to files.
+    Save a machine learning model along with hyperparameters and metrics to a specified file path.
 
     Parameters:
-    - model: The regression model to be saved.
-    - hyperparameters: Dictionary containing hyperparameters.
-    - metrics: Dictionary containing metrics.
-    - file_path: The directory path to save the model files.
-    - model_name: The name to use for the model files.
+    - model: The machine learning model to be saved.
+    - hyperparameters: Dictionary containing hyperparameters used for training the model.
+    - metrics: Dictionary containing evaluation metrics for the model.
+    - file_path: The directory where the model and associated information will be saved.
     """
-    dump(model, os.path.join(file_path, f"{model_name}.joblib"))
-    with open(os.path.join(file_path, f"{model_name}_hyperparameters.json"), "w") as file:
+    if model_name is None:
+            # Generate a timestamped model name if not provided
+            model_name = datetime.now().isoformat().replace(":", "_")
+        # Create a folder for the model
+    model_folder = os.path.join(file_path, model_name)
+    os.makedirs(model_folder, exist_ok=True)
+    # Save the model's state dictionary or joblib file depending on the type of model
+    if isinstance(model, torch.nn.Module):
+        if model_name is None:
+            # Generate a timestamped model name if not provided
+            model_name = datetime.now().isoformat().replace(":", "_")
+        # Create a folder for the model
+        model_folder = os.path.join(file_path, model_name)
+        os.makedirs(model_folder, exist_ok=True)
+        # Save the model's state dictionary
+        torch.save(model.state_dict(), os.path.join(model_folder, f"{model_name}.pt"))
+    else:
+        dump(model, os.path.join(model_folder, f"{model_name}.joblib"))
+
+    # Save hyperparameters as JSON file
+    with open(os.path.join(model_folder, f"{model_name}_hyperparameters.json"), "w") as file:
         json.dump(hyperparameters, file)
-    with open(os.path.join(file_path, f"{model_name}_metrics.json"), "w") as file:
+
+    # Save metrics as JSON file
+    with open(os.path.join(model_folder, f"{model_name}_metrics.json"), "w") as file:
         json.dump(metrics, file)
 
 def custom_tune_regression_model_hyperparameters(model_class, X_train, y_train, X_val, y_val, X_test, y_test, hyperparameters):
@@ -332,3 +359,337 @@ def find_best_classifier_model(directory):
     print(f"Best model: {best_model}, best hyperparameters: {best_model_hperparameters}, best metrics: {best_metrics}")
     # The best model, hyperparameteres and metrics are returned
     return best_model, best_model_hperparameters, best_metrics, best_model_prefix
+
+class AirbnbNightlyPriceRegressionDataset(Dataset):
+    """
+    PyTorch Dataset for Airbnb price per night regression.
+
+    Parameters:
+    - features: pandas DataFrame or numpy array, input features.
+    - labels: pandas Series or numpy array, labels.
+
+    Attributes:
+    - features: torch.Tensor, input features as float.
+    - labels: torch.Tensor, corresponding labels as float.
+    """
+    def __init__(self, features, labels):
+        """
+        Initializes the dataset with features and labels.
+
+        Converts features and labels to torch.Tensor.
+
+        Parameters:
+        - features: pandas DataFrame or numpy array, features.
+        - labels: pandas Series or numpy array, corresponding labels.
+        """
+        if isinstance(features, pd.DataFrame):
+            features = features.values
+        if isinstance(labels, pd.Series):
+            labels = labels.values
+        self.features = torch.from_numpy(features).float()
+        self.labels = torch.from_numpy(labels).float()
+        
+    def __getitem__(self, idx):
+        """
+        Retrieves a single pair (features, labels) from the dataset.
+
+        Parameters:
+        - idx: int, index of the item to retrieve.
+
+        Returns:
+        - tuple: (torch.Tensor, torch.Tensor), features and corresponding labels.
+        """
+        return self.features[idx], self.labels[idx]
+    
+    def __len__(self):
+        """
+        Returns the length of the dataset.
+
+        Returns:
+        - int: Length of the dataset.
+        """
+        return len(self.features)
+    
+class MLP(torch.nn.Module):
+    def __init__(self, config):
+        """
+        Multilayer Perceptron (MLP) model.
+
+        Parameters:
+        - config (dict): Configuration dictionary containing model hyperparameters.
+        """
+        # Calls the __init__ method of the superclass (torch.nn.Module).
+        super(MLP, self).__init__()
+        # An initially empty list of layers.
+        layers = []
+        # Add first hidden layer.
+        layers.append(torch.nn.Linear(config["input_size"], config["hidden_layer_width"]))
+        # Add batch normalization to first hidden layer.
+        layers.append(torch.nn.BatchNorm1d(config["hidden_layer_width"]))
+        # Add activation function to first hidden layer.
+        layers.append((getattr(torch.nn, config["activation_function"]))())
+        # Add dropout to first hidden layer.
+        layers.append(torch.nn.Dropout(config["drop-out"]))
+        # Add additional hidden layers based on model depth.
+        for _ in range(config["model_depth"] -1):
+            layers.append(torch.nn.Linear(config["hidden_layer_width"],config["hidden_layer_width"]))
+            layers.append(torch.nn.BatchNorm1d(config["hidden_layer_width"]))
+            layers.append((getattr(torch.nn, config["activation_function"]))())
+            layers.append(torch.nn.Dropout(config["drop-out"]))
+        layers.append(torch.nn.Linear(config["hidden_layer_width"], config["output_size"]))
+        self.layers = torch.nn.Sequential(*layers)
+
+    def forward(self, x):
+        """
+        Forward pass of the model.
+
+        Parameters:
+        - x (torch.Tensor): Input tensor.
+
+        Returns:
+        - torch.Tensor: Output tensor.
+        """
+        return self.layers(x)
+
+class RMSELoss(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mse = torch.nn.MSELoss()
+
+    def forward(self,x,y):
+        """
+        Forward pass of the RMSE loss.
+
+        Parameters:
+        - x (torch.Tensor): Predicted values.
+        - y (torch.Tensor): Ground truth values.
+
+        Returns:
+        - torch.Tensor: RMSE loss.
+        """
+        return torch.sqrt(self.mse(x,y))
+
+def train(model, data_loader, val_dataloader, config, epochs=700):
+    """
+    Train the given model using the specified configuration.
+
+    Parameters:
+    - model (torch.nn.Module): The neural network model.
+    - data_loader (torch.utils.data.DataLoader): Training data loader.
+    - val_dataloader (torch.utils.data.DataLoader): Validation data loader.
+    - config (dict): Configuration dictionary containing model hyperparameters.
+    - epochs (int): Number of training epochs.
+
+    Returns:
+    - tuple: Metrics, hyperparameters, best RMSE model state, and best R^2 model state.
+    """
+    # Optimiser is constructed by getting the activation function attribute from the torch.nn module. 
+    optimiser_class = getattr(torch.optim, config["optimiser"])
+    optimiser = optimiser_class(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
+    
+    # The RMSEloss class is instantiated.
+    rmse_loss = RMSELoss()
+    # The SummaryWriter class is instantiated.
+    writer = SummaryWriter()
+    batch_idx = 0
+    # Timestamp is obtained at the start of model training.
+    start_time = time.time()
+    best_rmse_model_state = None 
+    bestr2__model_state = None
+    best_val_r2 = 0.0
+    best_val_r2_loss = float("inf")
+    
+    # Patience =  number of epochs the model can be trained with no improvement before training is terminated.
+    patience = 100
+    epochs_without_improvement = 0
+
+    for epoch in range(epochs):
+        total_inference_latency = 0
+        num_batches = 0
+        total_train_loss = 0.0
+        total_train_r2 = 0.0
+        for batch in data_loader:
+            features, labels = batch
+            # Timestamp just before prediction is made.
+            pred_start_time = time.time()
+            prediction = model(features)
+            # Timestamp just after prediction is made.
+            pred_end_time = time.time()
+            total_inference_latency += pred_end_time - pred_start_time
+            num_batches += 1
+            # Label reshape for correct broadcasting
+            labels = labels.view(-1, 1)
+            # Training rmse loss is calculated for this batch and added to the total.
+            train_loss = rmse_loss(prediction, labels)
+            total_train_loss += train_loss.item()
+            # Training R^2 is calculted for this batch and added to the total.
+            trainr2 = r2_score(labels.detach().numpy(), prediction.detach().numpy())
+            total_train_r2 += trainr2
+            # Backpropagation: compute gradients of the loss with respect to model parameters.
+            train_loss.backward()
+            print(train_loss.item())
+            # Perform a single optimization step (parameter update)
+            optimiser.step()
+            # Clear the gradients for the next iteration
+            optimiser.zero_grad()
+            batch_idx += 1
+        
+        # Average training RMSE loss and R^2 for the current epoch is calculated
+        average_train_loss = total_train_loss / num_batches
+        average_train_r2 = total_train_r2 / num_batches
+        average_inference_latency = total_inference_latency / num_batches
+        # Average training RMSE loss and R^2 for the current epoch is plotted on the Tensorboard graph
+        writer.add_scalar("average Train RMSE loss", average_train_loss, epoch)
+        writer.add_scalar("average Train r2", average_train_r2, epoch)
+
+        # The model is in evaluation mode so validation predictions won't influence it's learning (data leakage) and for deactivating dropout and batch normalization layers.
+        model.eval()
+        # Gradients are not tracked and intermediate values are not stored for gradient computation.
+        with torch.no_grad():
+            val_losses = []
+            val_r2_scores = []
+            # Validation data is loaded
+            for features, labels in val_dataloader:
+                prediction = model(features)
+                #label reshape for broadcasting
+                labels = labels.view(-1, 1)
+                val_losses.append(rmse_loss(prediction, labels).item())
+                valr2 = r2_score(labels.detach().numpy(), prediction.detach().numpy())
+                val_r2_scores.append(valr2)
+            # Average validation RMSE loss and R^2 are calculated for this epoch
+            val_loss = sum(val_losses) / len(val_losses)
+            val_r2 = sum(val_r2_scores) / len(val_r2_scores)
+        
+        # Tensorboard will also graph the validation RMSE and R^2 and training RMSE for each epoch
+        writer.add_scalar("Validation RMSE loss", val_loss, epoch)
+        writer.add_scalar("Validation R^2 score", val_r2, epoch)
+        writer.add_scalar("Train RMSE loss", train_loss.item(), epoch)
+
+        # Calculate the average validation RMSE loss for the current epoch.
+        average_val_loss = sum(val_losses) / len(val_losses)
+        # Calculate the average validation R^2 for the current epoch.
+        average_val_r2 = sum(val_r2_scores) / len(val_r2_scores)
+
+        # Current average R^2 is compared to best and determines when to reset epochs without improvement.
+        if average_val_r2 > best_val_r2:
+            # If current average R^2 for validation is best, "best_val_r2" and "best_val_r2_loss" is replaced.
+            epochs_without_improvement = 0
+            best_val_r2 = average_val_r2
+            # best_val_r2_loss represents the RMSE loss at the time of the best R^2.
+            best_val_r2_loss = average_val_loss
+            # Store the current state of the model as it has produced the best validation R^2 so far.
+            bestr2__model_state = model.state_dict()
+
+        else:
+            # If the current best R^2 is not beaten the epoch counter without improvement increases by 1.
+            epochs_without_improvement += 1
+            if epochs_without_improvement == patience:
+                # epochs without improvement reaching patience limit will break the training loop.
+                print(f"Early stopping due to no improvement after {patience} epochs at epoch:{epoch}.")
+                break
+   
+    # Timestamp following ermination of training.
+    end_time = time.time()
+    training_duration = end_time - start_time
+    
+    metrics = {
+        "Training RMSE loss" : train_loss.item(), # The current RMSE loss for the training set.
+        "Training R2" : trainr2, # The current R^2 score for the training set.
+        "Validation RMSE loss" : val_loss, # The current RMSE loss for the validation set.
+        "Validation R2" : valr2, # The current R^2 score for the validation set.
+        
+        "Average Train RMSE loss": average_train_loss, # The average RMSE loss over all batches in the current training epoch.
+        "Average Train R2": average_train_r2, # The average R^2 score over all batches in the current training epoch.
+
+        "Avg_val_r2_rmse" : best_val_r2_loss, # The RMSE loss corresponding to the best validation R^2 over all epochs.
+        "Avg_val_r2" : best_val_r2, # The best average R^2 score over all epochs.
+
+        "training_duration" : training_duration, # Time taken from start to end of training.
+        "inference_latency" : average_inference_latency # Time taken to make predictions.
+    }
+
+    hyperparams = {
+        "epochs" : epochs,
+        "patience" : patience,
+        "configs" : config
+    }
+    
+    return metrics, hyperparams, bestr2__model_state
+
+def test_set_test(model, test_dataloader):
+    """
+    Evaluate the given model on the test set and print average RMSE, R^2 score, and additional information.
+
+    Parameters:
+    - model: The PyTorch model to be evaluated.
+    """
+    model.eval()  # Set the model to evaluation mode
+    rmse_losses = []
+    r2_scores = []
+    best_r2 = 0.0
+    best_r2_rmse = float("inf")
+
+    with torch.no_grad():  # No need to track gradients
+        for features, labels in test_dataloader:
+            predictions = model(features)
+            # Reshape labels for correct broadcasting
+            labels = labels.view(-1, 1)
+            # Compute RMSE and R^2 score for test data
+            rmse_loss = torch.sqrt(torch.nn.functional.mse_loss(predictions, labels)).item()
+            r2 = r2_score(labels.detach().numpy(), predictions.detach().numpy())
+            rmse_losses.append(rmse_loss)
+            r2_scores.append(r2)
+            
+            if r2 > best_r2:
+                best_r2_rmse = rmse_loss
+                best_r2 = r2
+
+    # Compute average RMSE and R^2 score over all batches
+    average_rmse = sum(rmse_losses) / len(rmse_losses)
+    average_r2 = sum(r2_scores) / len(r2_scores)
+
+    print(f'Average RMSE on the test data: {average_rmse}')
+    print(f'Average R^2 score on the test data: {average_r2}')
+    print(f"Batch with best r2: {best_r2}, best r2 run rmse: {best_r2_rmse}")
+
+def custom_tune_NN_model_hyperparameters(model_class, data_loader, val_dataloader, config_grid, best_model_folder):
+    """
+    Custom hyperparameter tuning for a neural net model.
+
+    Parameters:
+    - model_class: The class of the regression model to be tuned.
+    - data_loader: Training data loader.
+    - val_dataloader: Validation data loader.
+    - config_grid: A dictionary containing hyperparameter names as keys and lists of values to be tested as values.
+
+    Returns:
+    - best_model: The best performing regression model.
+    - best_hyperparameters: The hyperparameters of the best performing model.
+    - best_model_best_state: The state of the best model with the highest validation R^2.
+    - best_metrics: Metrics (including R^2 and RMSE) of the best-tuned model.
+    - config_grid: The original hyperparameter grid.
+    - additional_info: Dictionary containing additional information, such as validation RMSE and best R^2.
+    """
+    best_model = None
+    best_hyperparameters = None
+    best_RMSE = float("inf")
+    best_r2 = 0.0
+
+    hyperparameter_combinations = list(product(*config_grid.values()))
+
+    for combination in hyperparameter_combinations:
+        hyperparam_dict = dict(zip(config_grid.keys(), combination))
+        model = model_class(hyperparam_dict)
+        metrics, hyperparams, best_r2_model_state = train(model, data_loader, val_dataloader, hyperparam_dict)
+    
+        if metrics["Avg_val_r2"] > best_r2:
+            best_model = model
+            best_hyperparameters = hyperparams
+            best_RMSE = metrics["Avg_val_r2_rmse"]
+            best_r2 = metrics["Avg_val_r2"]
+            best_metrics = metrics
+            best_model_best_state = best_r2_model_state
+    # Best model is saved.        
+    save_model(best_model, best_hyperparameters, metrics, best_model_folder, None)
+    return best_model, best_hyperparameters, best_model_best_state, best_metrics, config_grid, {'validation_RMSE': best_RMSE, "best_r2": best_r2} 
+
